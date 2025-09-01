@@ -1,0 +1,138 @@
+import os
+import json
+import pandas as pd
+import pymysql
+from sqlalchemy import create_engine
+from urllib.parse import quote_plus  # ✅ for password encoding
+
+# ====== MySQL Connection Parameters ======
+host = "localhost"
+port = 3306
+user = "root"
+password = "Anton@19801024"
+database = "Cricket_analytics"   # ✅ Database name
+
+# ====== Create Database if not exists ======
+conn = pymysql.connect(host=host, user=user, password=password, port=port)
+cursor = conn.cursor()
+cursor.execute(f"CREATE DATABASE IF NOT EXISTS {database}")
+cursor.close()
+conn.close()
+
+# ====== SQLAlchemy Engine ======
+password_enc = quote_plus(password)  # ✅ encodes special chars like @
+engine = create_engine(f"mysql+pymysql://{user}:{password_enc}@{host}:{port}/{database}")
+
+# -------------------------------------------------------------------
+# 🔹 Function to process a JSON folder into 2 tables
+# -------------------------------------------------------------------
+def process_json_folder(json_folder, match_table, delivery_table):
+    all_match_info = []
+    all_deliveries = []
+
+    for file_name in os.listdir(json_folder):
+        if file_name.endswith(".json"):
+            match_id = int(file_name.replace(".json", ""))  # use filename as match_id
+            with open(os.path.join(json_folder, file_name), "r") as f:
+                data = json.load(f)
+
+            # ---- Match Info ----
+            if isinstance(data["meta"], list):
+                meta = data["meta"][0]
+            else:
+                meta = data["meta"]
+
+            info = data["info"]
+
+            match_info = {
+                "match_id": match_id,
+                "data_version": meta.get("data_version"),
+                "created": meta.get("created"),
+                "revision": meta.get("revision"),
+                "city": info.get("city"),
+                "event_name": info["event"]["name"] if "event" in info else None,
+                "match_number": info["event"].get("match_number") if "event" in info else None,
+                "gender": info.get("gender"),
+                "match_type": info.get("match_type"),
+                "season": info.get("season"),
+                "venue": info.get("venue"),
+                "toss_winner": info["toss"]["winner"] if "toss" in info else None,
+                "toss_decision": info["toss"]["decision"] if "toss" in info else None,
+                "winner": info["outcome"].get("winner") if "outcome" in info else None,
+                "win_margin_type": list(info["outcome"].get("by", {}).keys())[0]
+                                   if "outcome" in info and "by" in info["outcome"] else None,
+                "win_margin": list(info["outcome"].get("by", {}).values())[0]
+                              if "outcome" in info and "by" in info["outcome"] else None,
+                "player_of_match": info["player_of_match"][0]
+                                   if "player_of_match" in info and len(info["player_of_match"]) > 0 else None
+            }
+            all_match_info.append(match_info)
+
+            # ---- Deliveries ----
+            for inning in data["innings"]:
+                inning_team = inning["team"]
+                for over in inning["overs"]:
+                    over_no = over["over"]
+                    for ball_no, delivery in enumerate(over["deliveries"], start=1):
+                        row = {
+                            "match_id": match_id,
+                            "inning_team": inning_team,
+                            "over_number": over_no,
+                            "ball_number": ball_no,
+                            "batter": delivery["batter"],
+                            "bowler": delivery["bowler"],
+                            "non_striker": delivery["non_striker"],
+                            "runs_batter": delivery["runs"]["batter"],
+                            "runs_extras": delivery["runs"]["extras"],
+                            "runs_total": delivery["runs"]["total"],
+                            "extras_type": None,
+                            "wicket_player_out": None,
+                            "wicket_kind": None,
+                            "umpire_review": None
+                        }
+                        # extras
+                        if "extras" in delivery:
+                            row["extras_type"] = list(delivery["extras"].keys())[0]
+                        # wickets
+                        if "wickets" in delivery:
+                            row["wicket_player_out"] = delivery["wickets"][0]["player_out"]
+                            row["wicket_kind"] = delivery["wickets"][0]["kind"]
+                        # review
+                        if "review" in delivery:
+                            row["umpire_review"] = delivery["review"]["decision"]
+
+                        all_deliveries.append(row)
+
+    # ====== Convert to DataFrames ======
+    df_match_info = pd.DataFrame(all_match_info)
+    df_deliveries = pd.DataFrame(all_deliveries)
+
+    # ====== Insert into MySQL ======
+    df_match_info.to_sql(match_table, engine, if_exists="replace", index=False)
+    df_deliveries.to_sql(delivery_table, engine, if_exists="replace", index=False)
+
+    print(f"✅ Inserted into MySQL tables: {match_table} & {delivery_table} (DB: {database})")
+
+# -------------------------------------------------------------------
+# 🔹 Run for IPL JSONs (renamed tables)
+# -------------------------------------------------------------------
+ipl_folder = r"C:\Users\ANTON\Documents\VS Code\Project-02\Data\ipljson"
+process_json_folder(ipl_folder, "ipl_match_info", "ipl_deliveries")
+
+# -------------------------------------------------------------------
+# 🔹 Run for ODI JSONs (separate tables)
+# -------------------------------------------------------------------
+odi_folder = r"C:\Users\ANTON\Documents\VS Code\Project-02\Data\odis_json\01"
+process_json_folder(odi_folder, "odi_match_info", "odi_deliveries")
+
+# -------------------------------------------------------------------
+# 🔹 Run for T20 JSONs (separate tables)
+# -------------------------------------------------------------------
+t20_folder = r"C:\Users\ANTON\Documents\VS Code\Project-02\Data\t20s_json\01"
+process_json_folder(t20_folder, "t20_match_info", "t20_deliveries")
+
+# -------------------------------------------------------------------
+# 🔹 Run for Test JSONs (separate tables)
+# -------------------------------------------------------------------
+test_folder = r"C:\Users\ANTON\Documents\VS Code\Project-02\Data\tests_json"
+process_json_folder(test_folder, "test_match_info", "test_deliveries")
